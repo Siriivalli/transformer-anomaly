@@ -1,0 +1,310 @@
+'''import numpy as np
+import pandas as pd
+import math
+
+# Load the CSV data
+data_file = "D:/ps/preprocessed_data.csv"
+data = pd.read_csv(data_file)
+
+# Select columns for embeddings
+selected_columns = ['Open', 'High', 'Low', 'Close']
+if not all(col in data.columns for col in selected_columns):
+    raise ValueError("Missing required columns in the dataset.")
+
+# Prepare word embeddings and positional encodings
+data = data.head(1000)
+word_embeddings = data[selected_columns].to_numpy()
+seq_length, embed_dim = word_embeddings.shape
+
+def positional_encoding(seq_length, embed_dim):
+    position = np.arange(seq_length)[:, np.newaxis]
+    div_term = np.exp(np.arange(0, embed_dim, 2) * -(math.log(10000.0) / embed_dim))
+    pos_enc = np.zeros((seq_length, embed_dim))
+    pos_enc[:, 0::2] = np.sin(position * div_term)
+    pos_enc[:, 1::2] = np.cos(position * div_term)
+    return pos_enc
+
+positional_encodings = positional_encoding(seq_length, embed_dim)
+input_embeddings = word_embeddings + positional_encodings
+
+# Multi-Head Anomaly-Attention
+class AnomalyAttention:
+    def __init__(self, embed_dim, num_heads=8):
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.W_Q = np.random.rand(embed_dim, embed_dim)
+        self.W_K = np.random.rand(embed_dim, embed_dim)
+        self.W_V = np.random.rand(embed_dim, embed_dim)
+        self.scale = 1.0 / math.sqrt(embed_dim)
+
+    def forward(self, embeddings):
+        Q = embeddings @ self.W_Q
+        K = embeddings @ self.W_K
+        V = embeddings @ self.W_V
+        series_assoc = softmax(Q @ K.T * self.scale)
+        prior_assoc = self.compute_prior_association(seq_length)
+        assoc_discrepancy = self.compute_discrepancy(series_assoc, prior_assoc)
+        return series_assoc @ V, assoc_discrepancy
+
+    def compute_prior_association(self, seq_length):
+        prior_assoc = np.exp(-np.abs(np.arange(seq_length)[:, None] - np.arange(seq_length)) / self.scale)
+        return prior_assoc / prior_assoc.sum(axis=1, keepdims=True)
+
+    def compute_discrepancy(self, series_assoc, prior_assoc):
+        kl_div = np.sum(series_assoc * np.log(series_assoc / prior_assoc + 1e-9), axis=-1)
+        return kl_div.mean()
+
+# Loss function combining reconstruction and association discrepancy
+def anomaly_loss(reconstructed, original, discrepancy, lambda_=0.1):
+    recon_loss = np.mean((reconstructed - original) ** 2)
+    return recon_loss - lambda_ * discrepancy
+
+# Train loop
+attention = AnomalyAttention(embed_dim)
+learning_rate = 0.001
+epochs = 10
+anomaly_scores = []
+
+for epoch in range(epochs):
+    series_output, assoc_discrepancy = attention.forward(input_embeddings)
+    loss = anomaly_loss(series_output, word_embeddings, assoc_discrepancy)
+    anomaly_scores.append(assoc_discrepancy)
+    print(f"Epoch {epoch + 1}/{epochs}, Loss: {loss}")
+
+# Detect anomalies based on anomaly scores
+threshold = np.percentile(anomaly_scores, 95)
+anomalies = np.where(anomaly_scores > threshold)[0]
+print("Anomalies detected at indices:", anomalies)
+'''
+'''import numpy as np
+import pandas as pd
+import math
+
+# Load the CSV data
+data_file = "D:/ps/preprocessed_data.csv"
+data = pd.read_csv(data_file)
+
+# Select columns for embeddings
+selected_columns = ['Open', 'High', 'Low', 'Close']
+if not all(col in data.columns for col in selected_columns):
+    raise ValueError("Missing required columns in the dataset.")
+
+# Prepare word embeddings and positional encodings
+data = data.head(1000)
+word_embeddings = data[selected_columns].to_numpy()
+seq_length, embed_dim = word_embeddings.shape
+
+def positional_encoding(seq_length, embed_dim):
+    position = np.arange(seq_length)[:, np.newaxis]
+    div_term = np.exp(np.arange(0, embed_dim, 2) * -(math.log(10000.0) / embed_dim))
+    pos_enc = np.zeros((seq_length, embed_dim))
+    pos_enc[:, 0::2] = np.sin(position * div_term)
+    pos_enc[:, 1::2] = np.cos(position * div_term)
+    return pos_enc
+
+positional_encodings = positional_encoding(seq_length, embed_dim)
+input_embeddings = word_embeddings + positional_encodings
+
+# Multi-Head Anomaly-Attention
+class AnomalyAttention:
+    def __init__(self, embed_dim, num_heads=8):
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.W_Q = np.random.rand(embed_dim, embed_dim)
+        self.W_K = np.random.rand(embed_dim, embed_dim)
+        self.W_V = np.random.rand(embed_dim, embed_dim)
+        self.scale = 1.0 / math.sqrt(embed_dim)
+
+    def forward(self, embeddings):
+        Q = embeddings @ self.W_Q
+        K = embeddings @ self.W_K
+        V = embeddings @ self.W_V
+        series_assoc = self.softmax(Q @ K.T * self.scale)
+        prior_assoc = self.compute_prior_association(seq_length)
+        assoc_discrepancy = self.compute_discrepancy(series_assoc, prior_assoc)
+        return series_assoc @ V, assoc_discrepancy
+
+    def softmax(self, x):
+        exp_x = np.exp(x - np.max(x, axis=-1, keepdims=True))  # Prevent overflow
+        return exp_x / np.sum(exp_x, axis=-1, keepdims=True)
+
+    def compute_prior_association(self, seq_length):
+        prior_assoc = np.exp(-np.abs(np.arange(seq_length)[:, None] - np.arange(seq_length)) / self.scale)
+        return prior_assoc / prior_assoc.sum(axis=1, keepdims=True)
+
+    def compute_discrepancy(self, series_assoc, prior_assoc):
+        # Using Kullback-Leibler Divergence to measure the discrepancy
+        kl_div = np.sum(series_assoc * np.log(series_assoc / (prior_assoc + 1e-9)), axis=-1)
+        return kl_div.mean()
+
+# Loss function combining reconstruction and association discrepancy
+def anomaly_loss(reconstructed, original, discrepancy, lambda_=0.1):
+    recon_loss = np.mean((reconstructed - original) ** 2)
+    return recon_loss - lambda_ * discrepancy
+
+# Min-Max Normalization with safety check
+def min_max_normalize(scores):
+    min_score = np.min(scores)
+    max_score = np.max(scores)
+    if max_score - min_score == 0:
+        return np.zeros_like(scores)  # Return zero if all scores are the same
+    return (scores - min_score) / (max_score - min_score)
+
+# Train loop
+attention = AnomalyAttention(embed_dim)
+learning_rate = 0.001
+epochs = 10
+anomaly_scores = []
+
+for epoch in range(epochs):
+    series_output, assoc_discrepancy = attention.forward(input_embeddings)
+    loss = anomaly_loss(series_output, word_embeddings, assoc_discrepancy)
+    anomaly_scores.append(assoc_discrepancy)
+
+    # Print weights to check if they are changing (optional)
+    print(f"Epoch {epoch + 1}/{epochs}, Loss: {loss}")
+    #print("W_Q:", attention.W_Q)  # Check weight updates
+    #print("W_K:", attention.W_K)
+    #print("W_V:", attention.W_V)
+
+# Normalize anomaly scores using min-max scaling
+normalized_anomaly_scores = min_max_normalize(np.array(anomaly_scores))
+
+# Detect anomalies based on normalized anomaly scores
+threshold = np.percentile(normalized_anomaly_scores, 95)  # Set threshold to the 95th percentile
+anomalies = np.where(normalized_anomaly_scores > threshold)[0]
+print("Anomalies detected at indices:", anomalies)'''
+
+import numpy as np
+import pandas as pd
+import math
+import matplotlib.pyplot as plt
+
+# Load the CSV data
+data_file = ("D:/ps/preprocessed_data.csv")
+data = pd.read_csv(data_file)
+
+# Select columns for embeddings
+selected_columns = ['Open', 'High', 'Low', 'Close']
+if not all(col in data.columns for col in selected_columns):
+    raise ValueError("Missing required columns in the dataset.")
+
+# Prepare word embeddings and positional encodings
+data = data.head(1000)
+word_embeddings = data[selected_columns].to_numpy()
+seq_length, embed_dim = word_embeddings.shape
+
+def positional_encoding(seq_length, embed_dim):
+    position = np.arange(seq_length)[:, np.newaxis]
+    div_term = np.exp(np.arange(0, embed_dim, 2) * -(math.log(10000.0) / embed_dim))
+    pos_enc = np.zeros((seq_length, embed_dim))
+    pos_enc[:, 0::2] = np.sin(position * div_term)
+    pos_enc[:, 1::2] = np.cos(position * div_term)
+    return pos_enc
+
+positional_encodings = positional_encoding(seq_length, embed_dim)
+input_embeddings = word_embeddings + positional_encodings
+
+# Multi-Head Anomaly-Attention
+class AnomalyAttention:
+    def __init__(self, embed_dim, num_heads=8):
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.W_Q = np.random.rand(embed_dim, embed_dim)
+        self.W_K = np.random.rand(embed_dim, embed_dim)
+        self.W_V = np.random.rand(embed_dim, embed_dim)
+        self.scale = 1.0 / math.sqrt(embed_dim)
+
+    def forward(self, embeddings):
+        Q = embeddings @ self.W_Q
+        K = embeddings @ self.W_K
+        V = embeddings @ self.W_V
+        series_assoc = self.softmax(Q @ K.T * self.scale)
+        return series_assoc @ V
+
+    def softmax(self, x):
+        exp_x = np.exp(x - np.max(x, axis=-1, keepdims=True))
+        return exp_x / np.sum(exp_x, axis=-1, keepdims=True)
+
+    def compute_prior_association(self, seq_length):
+        prior_assoc = np.exp(-np.abs(np.arange(seq_length)[:, None] - np.arange(seq_length)) / self.scale)
+        return prior_assoc / prior_assoc.sum(axis=1, keepdims=True)
+
+    def compute_discrepancy(self, series_assoc, prior_assoc):
+        # Clip values to avoid divide by zero/overflow errors
+        series_assoc = np.clip(series_assoc, 1e-9, None)
+        prior_assoc = np.clip(prior_assoc, 1e-9, None)
+        
+        kl_div = np.sum(series_assoc * np.log(series_assoc / prior_assoc + 1e-9), axis=-1)
+        return kl_div.mean()
+
+# Encoder-Decoder Structure
+class EncoderDecoder:
+    def __init__(self, embed_dim, num_heads=8):
+        self.attention = AnomalyAttention(embed_dim, num_heads)
+        self.W_output = np.random.rand(embed_dim, embed_dim)
+
+    def encode(self, input_embeddings):
+        return self.attention.forward(input_embeddings)
+
+    def decode(self, encoded_embeddings):
+        return self.attention.forward(encoded_embeddings)  # For simplicity, using the same attention for decoding
+
+# Loss function combining reconstruction and association discrepancy
+def anomaly_loss(reconstructed, original, discrepancy, lambda_=0.1):
+    recon_loss = np.mean((reconstructed - original) ** 2)
+    return recon_loss + lambda_ * discrepancy  # Added discrepancy to loss
+
+# Gradient calculation (simplified)
+def compute_gradients(loss, model):
+    # Placeholder for gradient calculation (simple gradient for demonstration)
+    grad_loss = np.random.rand(*model.attention.W_Q.shape)  # Random gradients for the demo
+    return grad_loss
+
+# Backpropagation (gradient update) for learning
+def backpropagate(grad_loss, model, learning_rate):
+    # Ensure the weight matrices are updated with proper gradient values
+    model.attention.W_Q -= learning_rate * grad_loss
+    model.attention.W_K -= learning_rate * grad_loss
+    model.attention.W_V -= learning_rate * grad_loss
+    model.W_output -= learning_rate * grad_loss
+
+# Train loop
+model = EncoderDecoder(embed_dim)
+learning_rate = 0.001
+epochs = 10
+anomaly_scores = []
+
+for epoch in range(epochs):
+    # Forward pass through encoder and decoder
+    encoded = model.encode(input_embeddings)
+    decoded = model.decode(encoded)
+    
+    # Calculate discrepancy between series associations
+    series_assoc = model.attention.softmax(encoded @ encoded.T * model.attention.scale)
+    prior_assoc = model.attention.compute_prior_association(seq_length)
+    assoc_discrepancy = model.attention.compute_discrepancy(series_assoc, prior_assoc)
+    
+    # Compute the loss
+    loss = anomaly_loss(decoded, word_embeddings, assoc_discrepancy)
+    anomaly_scores.append(assoc_discrepancy)
+    
+    # Compute gradients
+    grad_loss = compute_gradients(loss, model)
+    
+    # Perform backpropagation
+    backpropagate(grad_loss, model, learning_rate)
+
+    print(f"Epoch {epoch + 1}/{epochs}, Loss: {loss}")
+
+# Detect anomalies based on anomaly scores
+threshold = np.percentile(anomaly_scores, 90)  # Lower threshold for detection
+anomalies = np.where(anomaly_scores > threshold)[0]
+print("Anomalies detected at indices:", anomalies)
+
+# Visualize the anomaly scores
+plt.plot(anomaly_scores)
+plt.title('Anomaly Scores Over Epochs')
+plt.xlabel('Epoch')
+plt.ylabel('Anomaly Score')
+plt.show()
