@@ -1,0 +1,211 @@
+import numpy as np
+import pandas as pd
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+
+class TransformerAnomalyDetection:
+    def __init__(self, input_dim, embed_dim, latent_dim, num_heads=1, num_epochs=10, lambda_factor=0.1, learning_rate=0.001, max_grad_norm=5.0):
+        self.embed_dim = embed_dim
+        self.latent_dim = latent_dim
+        self.num_heads = num_heads
+        self.num_epochs = num_epochs
+        self.lambda_factor = lambda_factor
+        self.learning_rate = learning_rate
+        self.input_dim = input_dim
+        self.max_grad_norm = max_grad_norm  # Maximum gradient norm for clipping
+
+        self.W_Q = np.random.randn(embed_dim, embed_dim) * 0.01
+        self.W_K = np.random.randn(embed_dim, embed_dim) * 0.01
+        self.W_V = np.random.randn(embed_dim, embed_dim) * 0.01
+        self.W_sigma = np.random.randn(1) * 0.01
+
+        self.projection_matrix = np.random.randn(input_dim, embed_dim) * 0.01
+        self.projection_to_latent = np.random.randn(embed_dim, latent_dim) * 0.01
+        self.reconstruction_W = np.random.randn(latent_dim, input_dim) * 0.01
+
+    def positional_encoding(self, sequence_length, embed_dim):
+        position = np.arange(sequence_length)[:, np.newaxis]
+        div_term = np.exp(np.arange(0, embed_dim, 2) * -(np.log(10000.0) / embed_dim))
+        pos_encoding = np.zeros((sequence_length, embed_dim))
+        pos_encoding[:, 0::2] = np.sin(position * div_term)
+        pos_encoding[:, 1::2] = np.cos(position * div_term)
+        return pos_encoding
+
+    def self_attention(self, X):
+        Q = X @ self.W_Q
+        K = X @ self.W_K
+        V = X @ self.W_V
+
+        attention_scores = np.clip(Q @ K.T / np.sqrt(self.embed_dim), -50, 50)
+        series_association = self.softmax(attention_scores)
+        output = series_association @ V
+        return output, series_association
+
+    def prior_association(self, sequence_length):
+        distance = np.abs(np.arange(sequence_length)[:, None] - np.arange(sequence_length))
+        sigma = np.exp(self.W_sigma[0])
+        gaussian_kernel = np.exp(-distance ** 2 / (2 * sigma ** 2))
+        prior_association = gaussian_kernel / gaussian_kernel.sum(axis=1, keepdims=True)
+        return prior_association
+
+    def calculate_association_discrepancy(self, series_assoc, prior_assoc):
+        kl_div = series_assoc * (np.log(series_assoc + 1e-9) - np.log(prior_assoc + 1e-9))
+        return kl_div.sum(axis=1)
+
+    def calculate_loss(self, X, reconstructed_X, assoc_discrepancy, beta):
+        reconstruction_loss = np.mean(np.nan_to_num((X - reconstructed_X) ** 2, nan=0.0, posinf=1e6, neginf=-1e6))
+        discrepancy_loss = np.mean(np.nan_to_num(assoc_discrepancy, nan=0.0, posinf=1e6, neginf=-1e6))
+        return reconstruction_loss - beta * discrepancy_loss
+
+    def softmax(self, X):
+        exp_X = np.exp(X - np.max(X, axis=-1, keepdims=True))
+        return exp_X / np.sum(exp_X, axis=-1, keepdims=True)
+
+    def reconstruct(self, encoded_X):
+        encoded_latent = encoded_X @ self.projection_to_latent
+        return encoded_latent @ self.reconstruction_W
+
+    def clip_gradients(self, grad_Q, grad_K, grad_V, grad_W_sigma, grad_reconstruction_W):
+        grad_all = np.concatenate([grad_Q.flatten(), grad_K.flatten(), grad_V.flatten(), grad_W_sigma.flatten(), grad_reconstruction_W.flatten()])
+        grad_norm = np.linalg.norm(grad_all)
+        
+        if grad_norm > self.max_grad_norm:
+            scale = self.max_grad_norm / grad_norm
+            grad_Q *= scale
+            grad_K *= scale
+            grad_V *= scale
+            grad_W_sigma *= scale
+            grad_reconstruction_W *= scale
+        
+        return grad_Q, grad_K, grad_V, grad_W_sigma, grad_reconstruction_W
+
+    def backward(self, X, reconstructed_X, assoc_discrepancy, series_assoc, prior_assoc, encoded_X):
+        sequence_length = X.shape[0]
+
+        grad_reconstruction = 2 * (reconstructed_X - X) / sequence_length
+        encoded_latent = encoded_X @ self.projection_to_latent
+        grad_reconstruction_W = encoded_latent.T @ grad_reconstruction
+        grad_encoded_latent = grad_reconstruction @ self.reconstruction_W.T
+        grad_encoded_X = grad_encoded_latent @ self.projection_to_latent.T
+
+        Q = encoded_X @ self.W_Q
+        K = encoded_X @ self.W_K
+        V = encoded_X @ self.W_V
+
+        attention_scale = 1.0 / np.sqrt(self.embed_dim)
+        attention_scores = np.clip(Q @ K.T * attention_scale, -50, 50)
+        grad_attention_output = grad_encoded_X
+
+        grad_V = series_assoc.T @ grad_attention_output
+
+        grad_scores = grad_attention_output @ V.T
+        grad_scores *= attention_scale
+
+        grad_Q = grad_scores @ K
+        grad_K = grad_scores.T @ Q
+
+        grad_W_Q = encoded_X.T @ grad_Q
+        grad_W_K = encoded_X.T @ grad_K
+        grad_W_V = encoded_X.T @ grad_V
+
+        grad_W_sigma = np.sum(np.nan_to_num(prior_assoc - series_assoc, nan=0.0, posinf=1e6, neginf=-1e6))
+
+        return grad_W_Q, grad_W_K, grad_W_V, grad_W_sigma.reshape(1,), grad_reconstruction_W
+
+    def update_weights(self, grad_Q, grad_K, grad_V, grad_W_sigma, grad_reconstruction_W):
+        self.W_Q -= self.learning_rate * grad_Q
+        self.W_K -= self.learning_rate * grad_K
+        self.W_V -= self.learning_rate * grad_V
+        self.W_sigma -= self.learning_rate * grad_W_sigma
+        self.reconstruction_W -= self.learning_rate * grad_reconstruction_W
+
+    def train(self, X):
+        sequence_length = X.shape[0]
+        positional_enc = self.positional_encoding(sequence_length, self.embed_dim)
+        X_projected = X @ self.projection_matrix
+        X_embedded = X_projected + positional_enc
+
+        losses = []
+        for epoch in range(self.num_epochs):
+            prior_assoc = self.prior_association(sequence_length)
+            encoded_X, series_assoc = self.self_attention(X_embedded)
+            assoc_discrepancy = self.calculate_association_discrepancy(series_assoc, prior_assoc)
+            reconstructed_X = self.reconstruct(encoded_X)
+
+            loss = self.calculate_loss(X, reconstructed_X, assoc_discrepancy, -self.lambda_factor)
+            losses.append(loss)
+            print(f"Epoch {epoch + 1}/{self.num_epochs} (Minimize), Loss: {loss}")
+
+            grad_Q, grad_K, grad_V, grad_W_sigma, grad_reconstruction_W = self.backward(
+                X, reconstructed_X, assoc_discrepancy, series_assoc, prior_assoc, encoded_X
+            )
+            grad_Q, grad_K, grad_V, grad_W_sigma, grad_reconstruction_W = self.clip_gradients(
+                grad_Q, grad_K, grad_V, grad_W_sigma, grad_reconstruction_W
+            )
+            self.update_weights(grad_Q, grad_K, grad_V, grad_W_sigma, grad_reconstruction_W)
+
+            prior_assoc = self.prior_association(sequence_length)
+            encoded_X, series_assoc = self.self_attention(X_embedded)
+            assoc_discrepancy = self.calculate_association_discrepancy(series_assoc, prior_assoc)
+            reconstructed_X = self.reconstruct(encoded_X)
+
+            loss = self.calculate_loss(X, reconstructed_X, assoc_discrepancy, self.lambda_factor)
+            losses.append(loss)
+            print(f"Epoch {epoch + 1}/{self.num_epochs} (Maximize), Loss: {loss}")
+
+            grad_Q, grad_K, grad_V, grad_W_sigma, grad_reconstruction_W = self.backward(
+                X, reconstructed_X, assoc_discrepancy, series_assoc, prior_assoc, encoded_X
+            )
+            grad_Q, grad_K, grad_V, grad_W_sigma, grad_reconstruction_W = self.clip_gradients(
+                grad_Q, grad_K, grad_V, grad_W_sigma, grad_reconstruction_W
+            )
+            self.update_weights(grad_Q, grad_K, grad_V, grad_W_sigma, grad_reconstruction_W)
+
+        return losses
+
+    def detect_anomalies(self, X):
+        sequence_length = X.shape[0]
+        positional_enc = self.positional_encoding(sequence_length, self.embed_dim)
+        X_projected = X @ self.projection_matrix
+        X_embedded = X_projected + positional_enc
+
+        encoded_X, series_assoc = self.self_attention(X_embedded)
+        prior_assoc = self.prior_association(sequence_length)
+        assoc_discrepancy = self.calculate_association_discrepancy(series_assoc, prior_assoc)
+        reconstructed_X = self.reconstruct(encoded_X)
+        reconstruction_error = np.mean(np.nan_to_num((X - reconstructed_X) ** 2, nan=0.0, posinf=1e6, neginf=-1e6), axis=1)
+        anomaly_scores = np.nan_to_num(assoc_discrepancy + reconstruction_error, nan=0.0, posinf=1e6, neginf=-1e6)
+        return anomaly_scores
+
+# Example usage
+model = TransformerAnomalyDetection(input_dim=4, embed_dim=8, latent_dim=4, num_epochs=10, learning_rate=0.001)
+data = pd.read_csv("preprocessed.csv")
+data = data.dropna()
+selected_columns = ['Open', 'High', 'Low', 'Close']
+
+X = data[selected_columns].values
+losses = model.train(X)
+anomaly_scores = model.detect_anomalies(X)
+
+# Define the true labels
+threshold = np.percentile(anomaly_scores, 95)
+anomaly_indices = np.where(anomaly_scores > threshold)[0]
+true_labels = np.zeros_like(anomaly_scores)
+true_labels[anomaly_indices] = 1
+
+# Evaluate the model
+predictions = (anomaly_scores > threshold).astype(int)
+accuracy = accuracy_score(true_labels, predictions)
+precision = precision_score(true_labels, predictions, zero_division=0)
+recall = recall_score(true_labels, predictions, zero_division=0)
+f1 = f1_score(true_labels, predictions, zero_division=0)
+roc_auc = roc_auc_score(true_labels, anomaly_scores)
+
+# Print evaluation metrics
+print(f"Accuracy: {accuracy * 100:.2f}%")
+print(f"Precision: {precision * 100:.2f}%")
+print(f"Recall: {recall * 100:.2f}%")
+print(f"F1 Score: {f1 * 100:.2f}%")
+print(f"ROC-AUC: {roc_auc:.4f}")
+
+# Print the indices of anomalies
+print(f"Anomaly indices: {anomaly_indices}")
